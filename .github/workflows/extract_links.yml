@@ -42,16 +42,3 @@ jobs:
         name: extracted-links
         path: links.txt
         retention-days: 7
-
-```
-
-**确认你的文件结构：**
-
-请确保你的 GitHub 仓库的根目录包含以下两个文件：
-
-```
-your-repo-name/
-├── .github/
-│   └── workflows/
-│       └── extract_links.yml
-└── extract_radio_links.py  # 你的 Python 脚本
