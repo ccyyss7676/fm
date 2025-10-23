@@ -147,11 +147,4 @@ def extract_and_save_download_links(url, output_filename="links.txt"):
 page_url = "https://www.radio.cn/pc-portal/sanji/zhibo_2.html?channelname=0&name=1395673&title=radio#"
 
 if __name__ == "__main__":
-    extract_and_save_download_links(page_url, "links.txt")        python extract_radio_links.py # 替换为你的 Python 脚本文件名
-
-    - name: Upload links.txt artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: extracted-links
-        path: links.txt # 指定要上传的文件
-        retention-days: 7 # 保留 Artifact 的天数
+    extract_and_save_download_links(page_url, "links.txt")
