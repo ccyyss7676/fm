@@ -190,7 +190,7 @@ def extract_and_save_download_links(url, output_filename="links.txt"):
         print("\n未能提取到任何下载链接。")
 
 # 页面URL
-page_url = "https://www.radio.cn/pc-portal/sanji/zhibo_2.html?channelname=0&name=1395630&title=radio#" # 修改为你的目标URL
+page_url = "https://www.radio.cn/pc-portal/sanji/zhibo_2.html?channelname=0&name=1395673&title=radio#" # 修改为你的目标URL
 
 if __name__ == "__main__":
     extract_and_save_download_links(page_url, "links.txt")
