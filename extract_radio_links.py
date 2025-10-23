@@ -4,29 +4,37 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 import re
 import os
-import time # 导入 time 模块用于等待
+import time
 
 def extract_and_save_download_links(url, output_filename="links.txt"):
     """
     使用 Selenium 提取页面中的下载链接、节目名称和日期，并按指定格式写入文件。
+    此版本已调整为在 GitHub Actions 的无头模式下运行，并增强了分页处理。
+    
     :param url: 目标网页的 URL。
     :param output_filename: 输出文件名。
     """
     download_data = [] # 存储 (节目名称 + 日期, 下载链接) 的元组
 
     chrome_options = ChromeOptions()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--headless") # 无头模式
+    chrome_options.add_argument("--no-sandbox") # 在 CI/CD 环境中通常需要
+    chrome_options.add_argument("--disable-dev-shm-usage") # 解决 Docker 或 CI 环境内存问题
+    chrome_options.add_argument("--window-size=1920,1080") # 设置窗口大小，确保所有元素可见
+    chrome_options.add_argument("--start-maximized") # 最大化窗口
+    chrome_options.add_argument("--disable-gpu") # 某些Linux环境可能需要禁用GPU
 
+    # 获取 ChromeDriver 路径。在 GitHub Actions 中，我们将通过环境变量传递
     chromedriver_path = os.getenv("CHROMEDRIVER_PATH")
     if not chromedriver_path:
-        print("CHROMEDRIVER_PATH 环境变量未设置，尝试使用 ChromeDriverManager().install()")
+        print("CHROMEDRIVER_PATH 环境变量未设置。尝试使用 ChromeDriverManager().install()")
         try:
             from webdriver_manager.chrome import ChromeDriverManager
             chromedriver_path = ChromeDriverManager().install()
+            print(f"ChromeDriverManager 自动安装到: {chromedriver_path}")
         except Exception as e:
             print(f"自动安装 ChromeDriver 失败: {e}")
             print("请确保 ChromeDriver 已正确安装并可被访问，或者设置 CHROMEDRIVER_PATH 环境变量。")
@@ -41,40 +49,48 @@ def extract_and_save_download_links(url, output_filename="links.txt"):
         driver.get(url)
 
         # 等待页面加载完成，特别是等待下载链接所在的元素出现
-        WebDriverWait(driver, 20).until(
+        print("等待初始页面加载...")
+        WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "#programList tbody tr"))
         )
-        print("页面加载完成，开始提取链接...")
+        print("初始页面加载完成，开始提取链接...")
 
         # --- 提取当前页面的数据 ---
         def extract_current_page_data():
             current_page_data = []
-            rows = driver.find_elements(By.CSS_SELECTOR, "#programList tbody tr")
-            for row in rows:
-                try:
-                    # 节目日期在第一个 td
-                    date_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(1)")
-                    program_date = date_element.text.strip()
+            try:
+                # 重新查找行元素，以防 StaleElementReferenceException
+                rows = driver.find_elements(By.CSS_SELECTOR, "#programList tbody tr")
+                for row in rows:
+                    try:
+                        # 节目日期在第一个 td
+                        date_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(1)")
+                        program_date = date_element.text.strip()
 
-                    # 节目名称在第二个 td 的 <a> 标签中
-                    name_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a")
-                    program_name = name_element.text.strip()
+                        # 节目名称在第二个 td 的 <a> 标签中
+                        name_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a")
+                        program_name = name_element.text.strip()
 
-                    # 下载链接在第三个 td 的 <a> 标签的 onclick 属性中
-                    download_link_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a[onclick^='downLiveRecord']")
-                    onclick_attr = download_link_element.get_attribute("onclick")
+                        # 下载链接在第三个 td 的 <a> 标签的 onclick 属性中
+                        download_link_element = row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a[onclick^='downLiveRecord']")
+                        onclick_attr = download_link_element.get_attribute("onclick")
 
-                    if onclick_attr:
-                        match = re.search(r"downLiveRecord\('([^']*)'", onclick_attr)
-                        if match:
-                            download_url = match.group(1)
-                            # 拼接成 "节目名称日期" 作为 item_title
-                            item_title = f"{program_name}{program_date}"
-                            current_page_data.append((item_title, download_url))
-                except Exception as e:
-                    # 某些行可能没有完整的下载信息，跳过
-                    print(f"处理行时发生错误: {e}")
-                    continue
+                        if onclick_attr:
+                            match = re.search(r"downLiveRecord\('([^']*)'", onclick_attr)
+                            if match:
+                                download_url = match.group(1)
+                                # 拼接成 "节目名称日期" 作为 item_title
+                                item_title = f"{program_name}{program_date}"
+                                current_page_data.append((item_title, download_url))
+                    except NoSuchElementException:
+                        # 某些行可能缺少下载链接或名称，跳过
+                        # print("警告: 发现缺少关键元素的行，已跳过。")
+                        continue
+                    except Exception as e_row:
+                        print(f"处理行时发生意外错误: {e_row}")
+                        continue
+            except Exception as e_extract_page:
+                print(f"提取当前页面数据时发生错误: {e_extract_page}")
             return current_page_data
 
         download_data.extend(extract_current_page_data())
@@ -83,55 +99,85 @@ def extract_and_save_download_links(url, output_filename="links.txt"):
         current_page_num = 1
         while True:
             try:
-                # 寻找下一页按钮
-                # GitHub Actions 的日志显示 page-next 按钮可能不可点击，
-                # 我们需要确保它是可点击的
-                next_button = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "#Pagination .page-next"))
+                # 在每次循环开始时获取当前页面的行元素，用于 staleness_of 检查
+                # 注意：这里获取的是当前页面的元素，用于判断页面是否刷新
+                initial_rows_for_staleness = driver.find_elements(By.CSS_SELECTOR, "#programList tbody tr")
+                if not initial_rows_for_staleness:
+                    print("当前页面没有找到节目行元素，可能已是最后一页或页面结构改变，停止分页。")
+                    break
+                
+                # 尝试点击下一个数字页码
+                next_page_element_to_click = None
+                try:
+                    current_checked_page_element = driver.find_element(By.CSS_SELECTOR, "#Pagination .num_page.checked_num")
+                    # 查找当前选中页码的下一个兄弟元素，且它也是一个数字页码
+                    next_page_candidates = current_checked_page_element.find_elements(By.XPATH, "./following-sibling::a[contains(@class, 'num_page')]")
+                    if next_page_candidates:
+                        next_page_element_to_click = next_page_candidates[0]
+                except NoSuchElementException:
+                    # 没有找到当前选中的页码或者下一个数字页码
+                    pass # 继续尝试点击“下一页”文本按钮
+
+                if next_page_element_to_click:
+                    print(f"尝试点击页码: {next_page_element_to_click.text}")
+                    next_page_element_to_click.click()
+                else:
+                    # 如果没有找到下一个数字页码，尝试点击“下一页”文本按钮
+                    try:
+                        next_text_button = WebDriverWait(driver, 5).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "#Pagination .page-next"))
+                        )
+                        # 检查“下一页”按钮是否是尾页或已禁用
+                        if "page-last" in next_text_button.get_attribute("class") or "disabled" in next_text_button.get_attribute("class"):
+                             print("已到达最后一页或'下一页'按钮不可用，停止分页。")
+                             break
+                        next_text_button.click()
+                    except TimeoutException:
+                        print("未找到可点击的'下一页'按钮，可能已是最后一页或加载错误，停止分页。")
+                        break
+                    except Exception as e_text_btn:
+                        print(f"点击'下一页'文本按钮时发生错误: {e_text_btn}")
+                        break
+
+                current_page_num += 1
+                print(f"成功点击下一页，当前第 {current_page_num} 页。")
+                time.sleep(3) # 给予页面足够的时间加载新内容和执行JS
+
+                # 等待页面内容更新
+                # 1. 等待旧的行元素从DOM中消失
+                WebDriverWait(driver, 15).until(
+                    EC.staleness_of(initial_rows_for_staleness[0])
+                )
+                # 2. 等待新的行元素出现
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#programList tbody tr"))
+                )
+                # 3. 再次等待新的下载链接元素出现，确保页面完全稳定
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#programList tbody a[onclick^='downLiveRecord']"))
                 )
 
-                # 检查下一页按钮是否为"尾页"或已禁用 (这里简单判断 class 中是否包含 'disabled' 或 'page-last')
-                # 根据你提供的 HTML，"尾页"按钮也有 'page-last' class
-                # 我们的目标是找到“下一页”按钮，如果它存在且不是尾页
-                if "page-last" in next_button.get_attribute("class") or "disabled" in next_button.get_attribute("class"):
-                    print("已到达最后一页或下一页按钮不可用。")
-                    break
+                download_data.extend(extract_current_page_data())
 
-                # 实际的下一页按钮可能在分页数字中，我们假设点击下一个数字
-                # 或者直接找到 class 为 page-next 的元素
-                next_page_link_css = f'#Pagination a.num_page + a.num_page' # 尝试定位当前选中页的下一个数字页
-                
-                # 更稳健的方法是找到当前选中的页码，然后尝试点击下一个页码
-                current_checked_page_element = driver.find_element(By.CSS_SELECTOR, "#Pagination .num_page.checked_num")
-                next_page_element = current_checked_page_element.find_element(By.XPATH, "./following-sibling::a[contains(@class, 'num_page')]")
+            except StaleElementReferenceException:
+                print("StaleElementReferenceException: 元素已过时，尝试重新获取。")
+                # 这种情况通常发生在页面更新后尝试使用旧的元素引用。
+                # 在循环顶部重新获取 initial_rows_for_staleness 可以缓解。
+                # 如果频繁发生，可能需要更长的 sleep 或更复杂的等待逻辑。
+                continue # 继续下一次循环，重新尝试
 
-                if next_page_element:
-                    next_page_element.click()
-                    current_page_num += 1
-                    print(f"点击下一页，当前第 {current_page_num} 页")
-                    time.sleep(3) # 等待新页面内容加载，可能需要更长时间
-
-                    # 再次等待新的数据加载完成
-                    WebDriverWait(driver, 15).until(
-                        EC.staleness_of(rows[0]) # 等待旧的行元素从DOM中消失
-                    )
-                    WebDriverWait(driver, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "#programList tbody tr"))
-                    )
-
-                    download_data.extend(extract_current_page_data())
-                else:
-                    print("未找到下一个数字页链接，结束分页。")
-                    break
-
-            except Exception as e:
-                print(f"处理分页时发生错误或已到最后一页: {e}")
+            except TimeoutException:
+                print("等待新页面内容加载超时，可能已是最后一页或网络问题，停止分页。")
+                break
+            except Exception as e_page_loop:
+                print(f"分页循环中发生意外错误: {e_page_loop}")
                 break
 
-    except Exception as e:
-        print(f"主程序发生错误: {e}")
+    except Exception as e_main:
+        print(f"主程序执行过程中发生错误: {e_main}")
     finally:
         if driver:
+            print("关闭浏览器。")
             driver.quit()
 
     # 将提取到的数据写入文件
@@ -144,7 +190,7 @@ def extract_and_save_download_links(url, output_filename="links.txt"):
         print("\n未能提取到任何下载链接。")
 
 # 页面URL
-page_url = "https://www.radio.cn/pc-portal/sanji/zhibo_2.html?channelname=0&name=1395673&title=radio#"
+page_url = "https://www.radio.cn/pc-portal/sanji/zhibo_2.html?channelname=0&name=1395630&title=radio#" # 修改为你的目标URL
 
 if __name__ == "__main__":
     extract_and_save_download_links(page_url, "links.txt")
